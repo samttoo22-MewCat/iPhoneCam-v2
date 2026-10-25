@@ -1,13 +1,13 @@
-package com.iphonecam.sender
+﻿package com.iphonecam.sender
 
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.Matrix
-import android.graphics.SurfaceTexture
 import android.net.wifi.WifiManager
 import android.os.Bundle
-import android.view.TextureView
+import android.view.Surface
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.iphonecam.sender.core.QualityTiers
+import com.iphonecam.sender.core.gl.BeautyParams
 import com.iphonecam.sender.ui.theme.*
 import kotlin.math.max
 
@@ -247,7 +248,12 @@ private fun HomePage(state: UiState, vm: SenderViewModel) {
                     .background(Color(0xFF05050F))
                     .border(1.dp, Cyan, RoundedCornerShape(12.dp))
             ) {
-                PreviewView(state, onSurface = { vm.attachPreview(it) }, modifier = Modifier.fillMaxSize())
+                PreviewView(
+                    state,
+                    onSurface = { s, w, h -> vm.attachPreview(s, w, h) },
+                    onSurfaceGone = { vm.detachPreview() },
+                    modifier = Modifier.fillMaxSize()
+                )
                 if (!state.hasVideo) {
                     StandbyView(Modifier.fillMaxSize())
                 }
@@ -452,7 +458,77 @@ private fun SettingsPage(state: UiState, vm: SenderViewModel) {
             }
         }
 
+        BeautyCard(state, vm)
+
         Text("版本 v2.0 · CAM1", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(start = 4.dp))
+    }
+}
+
+@Composable
+private fun BeautyCard(state: UiState, vm: SenderViewModel) {
+    val b = state.beauty
+    NeonCard(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("美顏", color = Pink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (b.enabled) "GPU 美顏" else "直通",
+                color = if (b.enabled) Cyan else Muted,
+                fontSize = 11.sp,
+                fontFamily = MonoFont
+            )
+            Spacer(Modifier.weight(1f))
+            Switch(
+                checked = b.enabled,
+                onCheckedChange = { vm.toggleBeauty() },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color(0xFF0B0B1E),
+                    checkedTrackColor = Cyan,
+                    uncheckedThumbColor = Muted,
+                    uncheckedTrackColor = Line
+                )
+            )
+        }
+        BeautySlider("磨皮", b.smooth, b.enabled) { vm.setBeauty(b.copy(smooth = it)) }
+        BeautySlider("美白", b.white, b.enabled) { vm.setBeauty(b.copy(white = it)) }
+        BeautySlider("清晰", b.sharpen, b.enabled) { vm.setBeauty(b.copy(sharpen = it)) }
+        BeautySlider("紅潤", b.pink, b.enabled) { vm.setBeauty(b.copy(pink = it)) }
+        if (b.enabled) {
+            Text("臉部區域以畫面中央橢圓加權；背景保持原樣", color = Muted, fontSize = 11.sp)
+        }
+    }
+}
+
+@Composable
+private fun BeautySlider(label: String, value: Float, enabled: Boolean, onChange: (Float) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            color = if (enabled) TextPrimary else MutedDim,
+            fontSize = 12.sp,
+            modifier = Modifier.width(38.dp)
+        )
+        Slider(
+            value = value,
+            onValueChange = onChange,
+            valueRange = 0f..1f,
+            enabled = enabled,
+            modifier = Modifier.weight(1f),
+            colors = SliderDefaults.colors(
+                thumbColor = if (enabled) Cyan else MutedDim,
+                activeTrackColor = Cyan,
+                inactiveTrackColor = Line,
+                activeTickColor = Color.Transparent,
+                inactiveTickColor = Color.Transparent
+            )
+        )
+        Text(
+            "${(value * 100).toInt()}",
+            color = if (enabled) TextPrimary else MutedDim,
+            fontSize = 12.sp,
+            fontFamily = MonoFont,
+            modifier = Modifier.width(30.dp)
+        )
     }
 }
 
@@ -477,76 +553,26 @@ private fun HelpPage() {
     }
 }
 
-// ==================== 預覽（依感測器固定方向，cover 縮放） ====================
-
-/**
- * 把相機 buffer（srcW×srcH，感測器原生橫向）以固定 rotation 旋轉成正立，
- * 再 cover 縮放置中填滿檢視框。rotation 只依感測器、不依裝置姿態，故手機旋轉時畫面方向固定。
- * 覆寫 onSizeChanged 與每次來源/旋轉變更都重算，避免換檔後矩陣未更新而縮到角落。
- */
-private class CameraPreviewView(ctx: Context) : TextureView(ctx) {
-    private var srcW = 0
-    private var srcH = 0
-    private var rotation = 90
-    private var mirror = false
-
-    fun configure(w: Int, h: Int, rot: Int, mir: Boolean) {
-        if (w == srcW && h == srcH && rot == rotation && mir == mirror) return
-        srcW = w; srcH = h; rotation = rot; mirror = mir
-        applyTransform()
-    }
-
-    private fun applyTransform() {
-        if (width <= 0 || height <= 0 || srcW <= 0 || srcH <= 0) return
-        val vw = width.toFloat()
-        val vh = height.toFloat()
-        val bw = srcW.toFloat()
-        val bh = srcH.toFloat()
-        val rotated = rotation % 180 != 0
-        val ew = if (rotated) bh else bw // 旋轉後佔用的寬
-        val eh = if (rotated) bw else bh // 旋轉後佔用的高
-        val s = max(vw / ew, vh / eh)    // cover
-
-        // 以「buffer 座標」為基準的目標矩陣：置中、鏡像、旋轉、cover、再置中
-        val m = Matrix()
-        m.setTranslate(-bw / 2f, -bh / 2f)
-        if (mirror) m.postScale(-1f, 1f)
-        m.postRotate(rotation.toFloat())
-        m.postScale(s, s)
-        m.postTranslate(vw / 2f, vh / 2f)
-
-        // TextureView 預設會把 buffer 拉伸填滿檢視框；先抵消這個拉伸，矩陣才會以 buffer 座標正確作用
-        val stretch = Matrix()
-        stretch.setScale(vw / bw, vh / bh)
-        val inv = Matrix()
-        if (stretch.invert(inv)) m.preConcat(inv)
-        setTransform(m)
-    }
-
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
-        applyTransform()
-    }
-}
 
 @Composable
-private fun PreviewView(state: UiState, onSurface: (SurfaceTexture) -> Unit, modifier: Modifier) {
-    // 預覽來源依裝置方向（手機直拿 → 直向）：實際寬高與 encoder 尺寸相反
-    val bufW = if (state.bufH > 0) state.bufH else QualityTiers.h()
-    val bufH = if (state.bufW > 0) state.bufW else QualityTiers.w()
-
+private fun PreviewView(
+    state: UiState,
+    onSurface: (Surface, Int, Int) -> Unit,
+    onSurfaceGone: () -> Unit,
+    modifier: Modifier
+) {
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
-            CameraPreviewView(ctx).apply {
-                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                    override fun onSurfaceTextureAvailable(s: SurfaceTexture, w: Int, h: Int) = onSurface(s)
-                    override fun onSurfaceTextureSizeChanged(s: SurfaceTexture, w: Int, h: Int) {}
-                    override fun onSurfaceTextureDestroyed(s: SurfaceTexture) = true
-                    override fun onSurfaceTextureUpdated(s: SurfaceTexture) {}
-                }
+            SurfaceView(ctx).apply {
+                holder.addCallback(object : SurfaceHolder.Callback {
+                    override fun surfaceCreated(h: SurfaceHolder) {}
+                    override fun surfaceChanged(h: SurfaceHolder, fmt: Int, w: Int, ht: Int) {
+                        if (w > 0 && ht > 0) onSurface(h.surface, w, ht)
+                    }
+                    override fun surfaceDestroyed(h: SurfaceHolder) = onSurfaceGone()
+                })
             }
-        },
-        update = { tv -> tv.configure(bufW, bufH, state.previewRot, state.previewMirror) }
+        }
     )
 }

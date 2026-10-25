@@ -1,14 +1,15 @@
 package com.iphonecam.sender
 
 import android.app.Application
-import android.graphics.SurfaceTexture
 import android.os.Build
 import android.os.PowerManager
 import android.util.Base64
+import android.view.Surface
 import androidx.lifecycle.AndroidViewModel
 import com.iphonecam.sender.core.NetServer
 import com.iphonecam.sender.core.QualityTiers
 import com.iphonecam.sender.core.StreamEngine
+import com.iphonecam.sender.core.gl.BeautyParams
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,6 +32,7 @@ data class UiState(
     val bufH: Int = 720,
     val previewRot: Int = 90,
     val previewMirror: Boolean = false,
+    val beauty: BeautyParams = BeautyParams(),
     val status: String = "待機",
 )
 
@@ -49,7 +51,10 @@ class SenderViewModel(app: Application) : AndroidViewModel(app) {
             pushQualityState()
         }
         override fun onSetImage(json: JSONObject) {
-            setStatus("PC 美顏參數已收下（未啟用）")
+            val p = BeautyParams.fromJson(json)
+            engine.setBeauty(p)
+            _state.update { it.copy(beauty = p) }
+            setStatus(if (p.enabled) "美顏已啟用（PC 遠端）" else "美顏已關閉（PC 遠端）")
         }
         override fun onIdrRequest() = engine.requestIdr()
         override fun onNetState(loss: Double, jitterMs: Int) = engine.onNetState(loss, jitterMs)
@@ -91,7 +96,9 @@ class SenderViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(lenses = engine.lenses, selectedLensId = engine.selectedLensId ?: "") }
     }
 
-    fun attachPreview(st: SurfaceTexture) = engine.attachPreview(st)
+    fun attachPreview(surface: Surface, w: Int, h: Int) = engine.attachPreview(surface, w, h)
+
+    fun detachPreview() = engine.detachPreview()
 
     // ---------------- 直播開關 ----------------
 
@@ -147,6 +154,17 @@ class SenderViewModel(app: Application) : AndroidViewModel(app) {
     fun setBitrate(mbps: Double) {
         _state.update { it.copy(mbps = mbps) }
         engine.setBitrate(mbps)
+    }
+
+    fun setBeauty(p: BeautyParams) {
+        val n = p.normalized()
+        engine.setBeauty(n)
+        _state.update { it.copy(beauty = n) }
+    }
+
+    fun toggleBeauty() {
+        val b = _state.value.beauty
+        setBeauty(b.copy(enabled = !b.enabled))
     }
 
     private fun pushQualityState() {

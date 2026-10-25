@@ -30,12 +30,18 @@
 
 ### 開發注意（地雷，先查再改）
 
+0. **遇到失敗或問題不用盲猜——先去看無他相機（Wuta Camera）怎麼解決的。** 每次卡住都照這個順序：① 從 APK 抽對應 `.so`／dex／assets ② 找它的架構與做法 ③ 對齊或改進。反編譯產物在 `C:\Users\Bubbles\AppData\Local\Temp\opencode\wuta_*`，原始 APK 在 `C:\Users\Bubbles\Downloads\Wuta+Camera+-+Nice+Shot+Always_7.1.5.167_APKPure.apk`。
 1. 交給下游的 buffer 一律 **packed（pitch＝寬）**，宣告與實際一致；**永不假設 allocator pitch＝寬**。
 2. 跨處理程序餵幀用**多重緩衝＋原子索引**，不用 mutex；斷訊才凍結上一幀。
 3. 手機／PC 都跑 **4:3 原生、CMOS 滿幅不裁切**；方向不重啟編碼，維持 sensor 原生方向，PC 以 `-vf` 轉正。
 4. Source DLL 跑在 FrameServer（SYSTEM），**看不到使用者 HKCU** → 畫布尺寸走 `Global\iPhoneCam.Config`（`SharedConfig.cs`），不是登錄檔。
 5. session 失敗要能逐檔降（4K→2K→1080P→720P→30fps）；drain 執行緒要防重入（`encGen`）。
 6. 診斷日誌：預覽 `C:\Temp\ipc-preview.log`、DLL `C:\Temp\ipcdll.log`。
+7. **停電／強制中斷後，Gradle 增量快取會損壞並誤判 UP-TO-DATE**（改的程式碼沒進 APK，且無任何錯誤）。症狀：log 不出現、行為與原始碼不符。解法：`Remove-Item app\build, .gradle -Recurse` 後重建。`clean` 任務實測不足，必須刪目錄。
+8. **Android 美顏預覽必須用 SurfaceView，不可用 TextureView**：TextureView 的 SurfaceTexture 被 Camera2 用過後，EGL 無法接手當 producer（`eglCreateWindowSurface` 回 `EGL_BAD_ALLOC`，7 個 config 全失敗）；即使勉強建立，`eglSwapBuffers` 會持續 `EGL_BAD_SURFACE`。無他相機也是 SurfaceView（`mWTSurfaceView`／`SurfaceHolder`）。
+9. **GL 幾何處理放在 shader**：改用 SurfaceView 後失去 TextureView 的 transform，改在 vertex shader 用 `uUvScale` 做 cover（`vTex=(aTex-0.5)*uUvScale+0.5`）。
+10. **MediaCodec input surface 需要 `EGL_RECORDABLE_ANDROID`（0x3142）的 EGL config**，否則 `eglCreateWindowSurface` 回 null，編碼端永遠收不到畫面。
+11. **切換頁面（SurfaceView 消失）時必須持續消費相機 buffer**：無輸出目標時仍要 `eglMakeCurrent(pbuffer)`＋`updateTexImage()`，否則 buffer 堆積導致 Camera2 停止送幀，回首頁後永久黑屏。`setPreview` 成功後要主動 `requestRender()`。
 
 ---
 

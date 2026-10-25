@@ -1,4 +1,4 @@
-package com.iphonecam.sender.core
+﻿package com.iphonecam.sender.core
 
 import android.content.Context
 import android.graphics.ImageFormat
@@ -77,8 +77,15 @@ class StreamEngine(private val ctx: Context, private val cb: Callbacks) {
     @Volatile private var currentZoom = 1.0f
     @Volatile private var encoder: MediaCodec? = null
     private var encoderSurface: Surface? = null
-    private var st: SurfaceTexture? = null
-    private var previewSurface: Surface? = null
+    private var previewTarget: Surface? = null
+    private var previewTargetW = 0
+    private var previewTargetH = 0
+
+    private var beauty: com.iphonecam.sender.core.gl.BeautyPipeline? = null
+    @Volatile private var beautyParams = com.iphonecam.sender.core.gl.BeautyParams()
+    private var beautyFailed = false
+    private var beautyW = 0
+    private var beautyH = 0
 
     @Volatile var streaming = false; private set
     @Volatile var hasVideo = false; private set
@@ -250,12 +257,62 @@ class StreamEngine(private val ctx: Context, private val cb: Callbacks) {
         }
     }
 
-    fun attachPreview(s: SurfaceTexture) {
-        st = s
+    fun attachPreview(surface: Surface, w: Int, h: Int) {
+        previewTarget = surface
+        previewTargetW = w
+        previewTargetH = h
+        beauty?.setPreview(surface, w, h)
         bgSafe {
             openCamera()
             cb.onPreviewConfig(previewRotationDegrees, previewMirror)
         }
+    }
+
+    fun detachPreview() {
+        previewTarget = null
+        beauty?.setPreview(null)
+    }
+
+    fun setBeauty(p: com.iphonecam.sender.core.gl.BeautyParams) {
+        beautyParams = p
+        beauty?.params = p
+        android.util.Log.d(
+            "IPC-Engine",
+            "setBeauty enabled=${p.enabled} smooth=${p.smooth} pipeline=${beauty != null} hasEffect=${p.hasEffect}"
+        )
+    }
+
+    val beautyActive: Boolean get() = beauty != null
+
+    private fun previewRotation(): Int =
+        if (useFront) (360 - sensorOrient) % 360 else (sensorOrient + 180) % 360
+
+
+    private fun ensureBeauty(
+        w: Int, h: Int, preview: Surface, viewW: Int, viewH: Int
+    ): com.iphonecam.sender.core.gl.BeautyPipeline? {
+        var p = beauty
+        if (p == null || beautyW != w || beautyH != h) {
+            p?.release(sync = true)
+            p = com.iphonecam.sender.core.gl.BeautyPipeline { msg -> cb.log(msg) }
+            beauty = p
+            beautyW = w
+            beautyH = h
+        }
+        p.params = beautyParams
+        p.setPreviewRotation(previewRotation())
+        if (p.cameraInput() == null) {
+            if (p.start(w, h) == null) {
+                p.release(sync = true)
+                beauty = null
+                beautyW = 0
+                beautyH = 0
+                return null
+            }
+        }
+        p.setPreview(preview, viewW, viewH)
+        if (streaming) p.setEncoder(encoderSurface)
+        return p
     }
 
     val previewRotationDegrees: Int
@@ -290,6 +347,8 @@ class StreamEngine(private val ctx: Context, private val cb: Callbacks) {
 
     fun release() {
         try { orient.disable() } catch (_: Exception) {}
+        beauty?.release(sync = true)
+        beauty = null
         bg.post {
             try {
                 streaming = false
@@ -304,7 +363,7 @@ class StreamEngine(private val ctx: Context, private val cb: Callbacks) {
     // ---------------- 相機 ----------------
 
     fun openCamera() {
-        if (device != null || st == null) return
+        if (device != null || previewTarget == null) return
         val id = selectedLensId
         if (id == null) { cb.log("找不到鏡頭"); return }
         try {
@@ -417,17 +476,28 @@ class StreamEngine(private val ctx: Context, private val cb: Callbacks) {
 
     private fun createSession() {
         val d = device ?: return
-        val s = st ?: return
+        val preview = previewTarget ?: return
         try {
-            s.setDefaultBufferSize(vidW, vidH)
             bufferW = vidW; bufferH = vidH
-            previewSurface?.release()
-            previewSurface = Surface(s)
             val targets = ArrayList<Surface>()
-            targets.add(previewSurface!!)
-            closeOverReader() // 超採樣停用（穩定優先，避免換檔競態）
-            encoderSurface?.let { targets.add(it) }
+            closeOverReader()
+            val bp = if (!beautyFailed) {
+                ensureBeauty(vidW, vidH, preview, previewTargetW, previewTargetH)
+            } else null
+            if (bp != null) {
+                bp.cameraInput()?.let { targets.add(it) }
+                encoderSurface?.let { bp.setEncoder(it) }
+            } else {
+                beautyFailed = true
+                targets.add(preview)
+                encoderSurface?.let { targets.add(it) }
+            }
             overSurface?.let { targets.add(it) }
+            if (targets.isEmpty()) return
+            android.util.Log.d(
+                "IPC-Engine",
+                "session targets=${targets.size} beauty=${bp != null} camInput=${bp?.cameraInput() != null}"
+            )
             val req = d.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
             targets.forEach { req.addTarget(it) }
             pickFpsRange(vidFps)?.let { req.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
@@ -436,6 +506,7 @@ class StreamEngine(private val ctx: Context, private val cb: Callbacks) {
             d.createCaptureSession(targets, object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(cs: CameraCaptureSession) {
                     session = cs; sessFails = 0
+                    android.util.Log.d("IPC-Engine", "session configured")
                     try {
                         cs.setRepeatingRequest(req.build(), null, bg)
                         setHasVideo(true)
@@ -536,6 +607,7 @@ class StreamEngine(private val ctx: Context, private val cb: Callbacks) {
         drainThread = null
         encoder?.let { try { it.stop() } catch (_: Exception) {}; try { it.release() } catch (_: Exception) {} }
         encoder = null
+        beauty?.setEncoder(null, sync = true)
         encoderSurface?.let { try { it.release() } catch (_: Exception) {} }
         encoderSurface = null
         sps = null; pps = null; vps = null; spsLogged = false
