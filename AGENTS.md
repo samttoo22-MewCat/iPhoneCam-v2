@@ -8,6 +8,8 @@
 > 本專案自身規格以 `SPEC-v3.md` 為準；產品簡介見 `README.md`。
 > 動手前先讀 `SPEC-v3.md`，再用下方機制對照表選路。
 
+> 2026-10-26：`ios/` 已有原生 SwiftUI／Metal 的預覽與基礎美顏原型；README 的 `docs/media/iphone-ui-simulator.gif` 僅展示 iPhone Simulator 介面，不能作為相機、串流或虛擬攝影機驗收。iOS 實作細節與驗證邊界讀 `ios/README.md`。
+
 ## v2 現況（2026-10-11）
 
 ### 元件與角色
