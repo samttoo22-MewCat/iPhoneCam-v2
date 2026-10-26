@@ -22,7 +22,13 @@
     <string>1</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
+    <key>UILaunchScreen</key>
+    <dict/>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+    </array>
     <key>NSCameraUsageDescription</key>
-    <string>Phone Lens 需要使用相機預覽，並在未來將美顏後畫面輸出為視訊鏡頭。</string>
+    <string>Phone Lens 使用相機在手機上即時預覽並處理美顏，不會上傳影像。</string>
 </dict>
 </plist>

@@ -1,259 +1,337 @@
 import SwiftUI
 
-private let accent = Color(red: 0.73, green: 0.84, blue: 0.67)
+private enum Palette {
+    static let bg = Color(red: 13/255, green: 13/255, blue: 36/255)
+    static let panel = Color(red: 18/255, green: 18/255, blue: 42/255)
+    static let line = Color(red: 42/255, green: 42/255, blue: 74/255)
+    static let muted = Color(red: 154/255, green: 163/255, blue: 192/255)
+    static let cyan = Color(red: 53/255, green: 214/255, blue: 255/255)
+    static let pink = Color(red: 255/255, green: 95/255, blue: 210/255)
+    static let purple = Color(red: 139/255, green: 92/255, blue: 246/255)
+    static let neon = LinearGradient(colors: [cyan, purple, pink], startPoint: .leading, endPoint: .trailing)
+}
 
 struct ContentView: View {
     @EnvironmentObject private var camera: CameraController
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
+    @State private var page = 0
     @State private var beauty = false
     @State private var connection = false
-    @State private var smoothing = 35.0
-    @State private var tone = 20.0
-    @State private var fill = 12.0
+    @State private var renderer: BeautyRenderer?
+    @State private var renderError: String?
+
+    private var effectiveBeauty: BeautyParams {
+        var result = camera.beauty
+        if camera.comparing { result.enabled = false }
+        return result
+    }
 
     var body: some View {
-        GeometryReader { geometry in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    header
-                    viewfinder.frame(height: max(260, geometry.size.height - 270))
-                    controls
-                        .opacity(beauty || connection ? 0 : 1)
-                        .accessibilityHidden(beauty || connection)
+        VStack(spacing: 0) {
+            header
+            Group {
+                switch page {
+                case 1: settings
+                case 2: help
+                default: home
                 }
-                .padding(.horizontal, 22)
-                .padding(.top, 12)
-                .padding(.bottom, 20)
             }
-            .scrollIndicators(.hidden)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .background(Color(red: 0.045, green: 0.05, blue: 0.05))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Palette.bg.ignoresSafeArea())
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            navigation.opacity(beauty || connection ? 0 : 1)
+                .accessibilityHidden(beauty || connection)
+        }
         .preferredColorScheme(.dark)
+        .tint(Palette.cyan)
+        .sensoryFeedback(.selection, trigger: page)
         .sensoryFeedback(.selection, trigger: beauty)
         .sensoryFeedback(.selection, trigger: connection)
-        .sheet(isPresented: $beauty) {
-            beautyPanel
-                .presentationDetents([.height(430), .large])
-                .presentationDragIndicator(.visible)
+        .sensoryFeedback(.selection, trigger: camera.comparing)
+        .task {
+            guard renderer == nil else { return }
+            do { renderer = try BeautyRenderer(frames: camera.frames) }
+            catch { renderError = error.localizedDescription }
+        }
+        .onChange(of: scenePhase) { _, phase in camera.setActive(phase == .active) }
+        .sheet(isPresented: $beauty, onDismiss: { camera.comparing = false }) {
+            ScrollView {
+                VStack(spacing: 16) {
+                    HStack {
+                        Text("自然美顏").font(.title2.bold())
+                        Spacer()
+                        Button("完成") { beauty = false }.modifier(NativeGlassButton())
+                    }
+                    beautyControls
+                    Text("即時處理手機影像；不會傳送到電腦。")
+                        .font(.footnote).foregroundStyle(Palette.muted)
+                }.padding(20)
+            }
+            .presentationDetents([.height(520), .large])
+            .presentationDragIndicator(.visible)
+            .tint(Palette.cyan)
         }
         .sheet(isPresented: $connection) {
-            connectionPanel
+            VStack(alignment: .leading, spacing: 20) {
+                HStack {
+                    Text("連接電腦").font(.title2.bold())
+                    Spacer()
+                    Button("完成") { connection = false }.modifier(NativeGlassButton())
+                }
+                Label("視訊鏡頭輸出尚未接入", systemImage: "desktopcomputer")
+                    .foregroundStyle(Palette.cyan)
+                Text("這一版提供手機端預覽、美顏與相機控制，不會啟動直播或傳送影像。")
+                Text("USB、CAM1/CUM1、編碼碼率及 Windows 接收端屬於下一階段。")
+                    .foregroundStyle(Palette.muted)
+                Spacer()
+            }.padding(24)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
     }
 
     private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("PHONE LENS")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .tracking(3).foregroundStyle(accent)
-                Text("你的隨身攝影棚").font(.title3.weight(.semibold))
+        HStack(spacing: 8) {
+            Image(systemName: "video.fill").foregroundStyle(Palette.neon)
+                .font(.title3)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("泡泡直播助手").font(.headline).foregroundStyle(Palette.pink)
+                Text("PHONE LENS · iPhone").font(.caption2).foregroundStyle(Palette.muted)
             }
-            Spacer()
+            Spacer(minLength: 4)
             Button { connection = true } label: {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 18))
-                    .frame(width: 24, height: 28)
+                Label("僅預覽", systemImage: "iphone").font(.caption.weight(.medium))
+                    .frame(minHeight: 32)
             }
-            .buttonBorderShape(.circle)
             .modifier(NativeGlassButton())
-            .controlSize(.large)
-            .accessibilityLabel("連線與輸出設定").tint(.white)
-        }
+            .accessibilityLabel("連線與輸出設定，目前僅手機預覽")
+        }.padding(.horizontal, 18).padding(.vertical, 10)
+            .accessibilityIdentifier("appHeader")
     }
 
-    private var viewfinder: some View {
+    private var home: some View {
+        VStack(spacing: 12) {
+            GeometryReader { geometry in
+                let width = min(geometry.size.width, geometry.size.height * camera.aspect)
+                preview
+                    .frame(width: max(1, width), height: max(1, width / camera.aspect))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(minHeight: 180)
+            NativeGlassGroup {
+                HStack(spacing: 12) {
+                    Button { beauty = true } label: {
+                        Label("美顏", systemImage: "sparkles").frame(maxWidth: .infinity, minHeight: 32)
+                    }.modifier(NativeGlassButton())
+                    Button { camera.comparing.toggle() } label: {
+                        Label(camera.comparing ? "返回美顏" : "對比原圖", systemImage: "circle.lefthalf.filled")
+                            .frame(maxWidth: .infinity, minHeight: 32)
+                    }.modifier(NativeGlassButton())
+                }
+            }.opacity(beauty || connection ? 0 : 1)
+                .accessibilityHidden(beauty || connection)
+            Button { camera.togglePreview() } label: {
+                Label(camera.isRunning ? "暫停預覽" : "開啟預覽",
+                      systemImage: camera.isRunning ? "pause.fill" : "play.fill")
+                    .font(.headline).frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .tint(Palette.purple)
+            .modifier(NativeGlassButton(prominent: true))
+            .disabled(!camera.isConfigured || camera.busy || renderError != nil)
+            .opacity(beauty || connection ? 0 : 1)
+            .accessibilityHidden(beauty || connection)
+        }.padding(.horizontal, 14).padding(.top, 4).padding(.bottom, 8)
+    }
+
+    private var preview: some View {
         ZStack {
-            if camera.isConfigured {
-                CameraPreview(session: camera.session)
+            if let renderer, camera.isRunning {
+                CameraPreview(renderer: renderer, params: effectiveBeauty, running: camera.isRunning)
             } else {
-                LinearGradient(colors: [
-                    Color(red: 0.23, green: 0.29, blue: 0.27),
-                    Color(red: 0.12, green: 0.16, blue: 0.16),
-                    Color(red: 0.06, green: 0.08, blue: 0.09)
-                ], startPoint: .topLeading, endPoint: .bottomTrailing)
-                GeometryReader { proxy in
-                    Path { path in
-                        for fraction in [1.0 / 3, 2.0 / 3] {
-                            path.move(to: CGPoint(x: proxy.size.width * fraction, y: 0))
-                            path.addLine(to: CGPoint(x: proxy.size.width * fraction, y: proxy.size.height))
-                            path.move(to: CGPoint(x: 0, y: proxy.size.height * fraction))
-                            path.addLine(to: CGPoint(x: proxy.size.width, y: proxy.size.height * fraction))
-                        }
-                    }.stroke(.white.opacity(0.06), lineWidth: 1)
-                }
-                VStack(spacing: 18) {
-                    Image(systemName: "viewfinder")
-                        .font(.system(size: 54, weight: .ultraLight))
-                        .foregroundStyle(accent.opacity(0.85))
-                    VStack(spacing: 6) {
-                        Text("好畫面，從這裡開始").font(.headline)
-                        Text(camera.status == .permissionDenied ? "允許相機權限以開啟預覽" : "連接實體 iPhone，開啟即時預覽")
-                            .font(.caption).foregroundStyle(.white.opacity(0.65))
+                LinearGradient(colors: [Palette.bg, Palette.panel], startPoint: .top, endPoint: .bottom)
+                VStack(spacing: 14) {
+                    Image(systemName: camera.permissionDenied ? "camera.badge.ellipsis" : "video")
+                        .font(.system(size: 44, weight: .light))
+                        .foregroundStyle(Palette.cyan)
+                        .padding(22).background(Palette.cyan.opacity(0.08), in: Circle())
+                        .overlay(Circle().stroke(Palette.neon, lineWidth: 1))
+                    Text(renderError ?? camera.status).font(.callout).multilineTextAlignment(.center)
+                    if camera.permissionDenied {
+                        Button("開啟系統設定") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                        }.modifier(NativeGlassButton())
                     }
-                }
+                }.padding(20)
             }
             VStack {
                 HStack {
-                    Label(camera.isConfigured ? "相機預覽" : "版面預覽", systemImage: "viewfinder")
+                    Text(!camera.isRunning ? "預覽未啟動" : (camera.comparing || !camera.beauty.enabled ? "原始畫面" : "GPU 美顏"))
+                        .foregroundStyle(Palette.cyan)
                     Spacer()
-                    Text(camera.isConfigured ? "前置" : "DEMO").tracking(1)
+                    Text("\(camera.fps) FPS 設定")
                 }
                 Spacer()
-                HStack {
-                    Label("原始畫面", systemImage: "circle.lefthalf.filled")
-                    Spacer()
-                    Text("PHONE LENS").tracking(2)
-                }.foregroundStyle(.white.opacity(0.55))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(camera.dimensions) · 取樣 \(camera.measuredFPS) FPS")
+                        .monospacedDigit()
+                    Text(camera.status).lineLimit(2)
+                }.frame(maxWidth: .infinity, alignment: .leading)
             }
             .font(.caption2.weight(.medium))
-            .foregroundStyle(.white.opacity(0.8))
-            .padding(18)
+            .padding(10)
+            .background(alignment: .bottom) {
+                LinearGradient(colors: [.clear, .black.opacity(0.65)],
+                               startPoint: .center, endPoint: .bottom)
+                    .allowsHitTesting(false)
+            }
+            .allowsHitTesting(false)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .strokeBorder(.white.opacity(0.1), lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Palette.cyan.opacity(0.8), lineWidth: 1))
+        .accessibilityIdentifier("cameraPreview")
     }
 
-    private var controls: some View {
-        VStack(spacing: 18) {
+    private var settings: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                card("相機設定") {
+                    LabeledContent("鏡頭切換") {
+                        if camera.lenses.isEmpty { Text("無可用鏡頭").foregroundStyle(Palette.muted) }
+                        else {
+                            Picker("鏡頭切換", selection: Binding(get: { camera.lensID }, set: { camera.select(lens: $0) })) {
+                                ForEach(camera.lenses) { Text($0.name).tag($0.id) }
+                            }.labelsHidden().disabled(camera.busy || !camera.isConfigured)
+                        }
+                    }
+                    .frame(minHeight: 44)
+                    LabeledContent("解析度檔位") {
+                        Picker("解析度檔位", selection: Binding(get: { camera.quality }, set: { camera.select(quality: $0) })) {
+                            Text("720p").tag(720)
+                            Text("1080p").tag(1080)
+                            Text("2K").tag(1440)
+                            Text("4K").tag(2160)
+                        }.labelsHidden().disabled(camera.busy || !camera.isConfigured)
+                    }.frame(minHeight: 44)
+                    LabeledContent("相機 FPS") {
+                        Picker("相機 FPS", selection: Binding(get: { camera.fps }, set: { camera.select(fps: $0) })) {
+                            Text("30 FPS").tag(30)
+                            Text("60 FPS").tag(60)
+                        }.labelsHidden().disabled(camera.busy || !camera.isConfigured)
+                    }.frame(minHeight: 44)
+                    Text("實際擷取：\(camera.dimensions) · \(camera.fps) FPS\n依鏡頭支援選擇最接近的 4:3 尺寸。")
+                        .font(.footnote).foregroundStyle(Palette.muted)
+                }
+                if camera.busy { ProgressView("正在套用相機設定…") }
+                Text(camera.status).font(.footnote).foregroundStyle(Palette.muted)
+                card("美顏") { beautyControls }
+                card("桌面輸出") {
+                    Text("碼率與直播尚未啟用").font(.subheadline)
+                    Button("查看連線說明") { connection = true }.modifier(NativeGlassButton())
+                }
+            }.padding(14)
+        }
+    }
+
+    private var beautyControls: some View {
+        VStack(spacing: 6) {
+            Toggle("GPU 美顏", isOn: $camera.beauty.enabled)
+                .font(.headline).padding(.bottom, 6)
+            beautySlider("磨皮", value: $camera.beauty.smooth)
+            beautySlider("美白", value: $camera.beauty.white)
+            beautySlider("清晰", value: $camera.beauty.sharpen)
+            beautySlider("紅潤", value: $camera.beauty.pink)
+            beautySlider("補光", value: $camera.beauty.fill)
+            Text("中央橢圓區域加權，未啟用人臉追蹤。清晰度也會影響背景。")
+                .font(.caption).foregroundStyle(Palette.muted)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
             HStack {
-                VStack(alignment: .leading, spacing: 5) {
-                    Label("尚未連接電腦", systemImage: "cable.connector")
-                        .font(.subheadline.weight(.medium))
-                    Text("輸出功能開發中").font(.caption).foregroundStyle(.secondary)
-                }
+                Button("重設") { camera.beauty = BeautyParams(); camera.comparing = false }
                 Spacer()
-                Text("1080p / 30").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            }
-            NativeGlassGroup {
-              HStack(spacing: 12) {
-                Button { beauty = true } label: {
-                    VStack(spacing: 4) {
-                        Label("美顏", systemImage: "sparkles").font(.subheadline.weight(.semibold))
-                        Text("調整預設").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    .frame(width: 76, height: 44)
-                }
-                .modifier(NativeGlassButton())
-                .tint(.white)
-                Button { connection = true } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "desktopcomputer")
-                        Text("連接電腦").fontWeight(.semibold)
-                        Spacer(minLength: 0)
-                        Image(systemName: "arrow.up.right").font(.caption.weight(.bold))
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .foregroundStyle(.black)
-                }
-                .modifier(NativeGlassButton(prominent: true))
-                .tint(accent)
-              }
-              .buttonBorderShape(.capsule)
-            }
+                Button(camera.comparing ? "返回美顏" : "對比原圖") { camera.comparing.toggle() }
+            }.modifier(NativeGlassButton()).frame(minHeight: 44)
         }
     }
 
-    private var beautyPanel: some View {
+    private func beautySlider(_ label: String, value: Binding<Float>) -> some View {
+        HStack(spacing: 12) {
+            Text(label).font(.subheadline).frame(width: 36, alignment: .leading)
+            Slider(value: value, in: 0...1)
+                .accessibilityLabel(label)
+                .accessibilityValue("\(Int(value.wrappedValue * 100))")
+                .disabled(!camera.beauty.enabled)
+            Text("\(Int(value.wrappedValue * 100))").font(.caption.monospacedDigit())
+                .frame(width: 28, alignment: .trailing)
+        }.frame(minHeight: 44)
+    }
+
+    private var help: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("自然美顏").font(.title2.weight(.semibold))
-                        Text("保留紋理，微調好氣色").font(.subheadline).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("完成") { beauty = false }
-                        .font(.subheadline.weight(.semibold)).tint(accent)
-                        .modifier(NativeGlassButton())
-                        .controlSize(.large)
+            VStack(spacing: 14) {
+                card("使用方式") {
+                    Text("1. 允許相機權限，首頁顯示即時預覽。\n2. 到「設定」選鏡頭、畫質與 FPS。\n3. 開啟「美顏」即時調整，使用「對比原圖」比較。\n4. 離開 App 會暫停相機，返回後恢復。")
+                        .font(.callout).lineSpacing(8)
                 }
-                VStack(spacing: 12) {
-                    beautySlider("柔膚", icon: "drop", value: $smoothing)
-                    beautySlider("膚色", icon: "circle.lefthalf.filled", value: $tone)
-                    beautySlider("補光", icon: "sun.max", value: $fill)
+                card("本版範圍") {
+                    Text("保留 iOS 原生 Liquid Glass、系統面板與觸覺回饋。美顏在手機 GPU 處理，不上傳影像。")
+                    Text("尚無 USB／Wi-Fi 串流、錄影或桌面虛擬攝影機輸出。")
+                        .foregroundStyle(Palette.muted)
                 }
-                HStack {
-                    Label("僅調整預設，尚未套用影像", systemImage: "info.circle")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("重設") { smoothing = 35; tone = 20; fill = 12 }
-                        .font(.caption.weight(.semibold)).tint(accent)
-                        .modifier(NativeGlassButton())
-                        .controlSize(.large)
-                }
-            }.padding(24).padding(.top, 10)
+            }.padding(14)
         }
     }
 
-    private func beautySlider(_ title: String, icon: String, value: Binding<Double>) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: icon).foregroundStyle(accent).frame(width: 22).accessibilityHidden(true)
-            Text(title).font(.subheadline).frame(width: 36)
-            Slider(value: value, in: 0...100, step: 1)
-                .tint(accent).accessibilityLabel(title)
-                .accessibilityValue("\(Int(value.wrappedValue))，僅預設")
-            Text("\(Int(value.wrappedValue))")
-                .font(.subheadline.monospacedDigit())
-                .frame(width: 28, alignment: .trailing).foregroundStyle(.secondary)
-        }.frame(minHeight: 48)
+    private func card<C: View>(_ title: String, @ViewBuilder content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(.subheadline.bold()).foregroundStyle(Palette.pink)
+            content()
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
+            .background(Palette.panel, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Palette.line, lineWidth: 1))
     }
 
-    private var connectionPanel: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                HStack {
-                    Text("連接電腦").font(.title2.weight(.semibold))
-                    Spacer()
-                    Button("完成") { connection = false }.tint(accent).frame(minHeight: 44)
-                        .modifier(NativeGlassButton())
-                }
-                Label("視訊鏡頭輸出開發中", systemImage: "desktopcomputer").foregroundStyle(accent)
-                Text("這個版本可預覽介面與調整美顏預設，尚無法將影像傳送到電腦。")
-                    .foregroundStyle(.secondary)
-                Divider()
-                LabeledContent("鏡頭名稱", value: "Phone Lens Camera")
-                LabeledContent("預定畫質", value: "1080p · 30 fps")
-            }.padding(24)
-        }
+    private var navigation: some View {
+        NativeGlassGroup {
+            HStack(spacing: 8) {
+                navItem("首頁", icon: "house.fill", index: 0)
+                navItem("設定", icon: "slider.horizontal.3", index: 1)
+                navItem("幫助", icon: "info.circle", index: 2)
+            }
+        }.padding(.horizontal, 14).padding(.vertical, 8)
+            .background(Palette.bg)
+    }
+
+    private func navItem(_ name: String, icon: String, index: Int) -> some View {
+        Button { page = index; camera.comparing = false } label: {
+            VStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 18))
+                Text(name).font(.caption)
+            }.frame(maxWidth: .infinity, minHeight: 44)
+        }.tint(page == index ? Palette.pink : Palette.muted)
+            .modifier(NativeGlassButton(prominent: page == index))
+            .accessibilityAddTraits(page == index ? .isSelected : [])
     }
 }
 
-// Native materials handle contrast / transparency preferences and touch feedback.
-// Older OS versions keep system bordered buttons without imitating Liquid Glass.
+// Native materials preserve system accessibility and iOS 17–25 fallbacks.
 private struct NativeGlassButton: ViewModifier {
     var prominent = false
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
+    @ViewBuilder func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            if prominent {
-                content.buttonStyle(.glassProminent)
-            } else {
-                content.buttonStyle(.glass)
-            }
-        } else if prominent {
-            content.buttonStyle(.borderedProminent)
-        } else {
-            content.buttonStyle(.bordered)
-        }
+            if prominent { content.buttonStyle(.glassProminent) }
+            else { content.buttonStyle(.glass) }
+        } else if prominent { content.buttonStyle(.borderedProminent) }
+        else { content.buttonStyle(.bordered) }
     }
 }
 
 private struct NativeGlassGroup<Content: View>: View {
     @ViewBuilder var content: () -> Content
-
     @ViewBuilder var body: some View {
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: 12) { content() }
-        } else {
-            content()
-        }
+        if #available(iOS 26.0, *) { GlassEffectContainer(spacing: 12) { content() } }
+        else { content() }
     }
 }
 

@@ -1,26 +1,27 @@
-import AVFoundation
+import MetalKit
 import SwiftUI
-import UIKit
 
 struct CameraPreview: UIViewRepresentable {
-    let session: AVCaptureSession
+    let renderer: BeautyRenderer
+    let params: BeautyParams
+    let running: Bool
 
-    func makeUIView(context: Context) -> PreviewView {
-        let view = PreviewView()
-        view.videoPreviewLayer.session = session
-        view.videoPreviewLayer.videoGravity = .resizeAspectFill
+    func makeUIView(context: Context) -> MTKView {
+        let view = MTKView(frame: .zero, device: renderer.device)
+        view.colorPixelFormat = .bgra8Unorm
+        view.framebufferOnly = true
+        view.preferredFramesPerSecond = 60
+        view.delegate = renderer
         return view
     }
 
-    func updateUIView(_ uiView: PreviewView, context: Context) {
-        uiView.videoPreviewLayer.session = session
+    func updateUIView(_ view: MTKView, context: Context) {
+        renderer.params = params
+        view.isPaused = !running
     }
-}
 
-final class PreviewView: UIView {
-    override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
-
-    var videoPreviewLayer: AVCaptureVideoPreviewLayer {
-        layer as! AVCaptureVideoPreviewLayer
+    static func dismantleUIView(_ view: MTKView, coordinator: ()) {
+        view.isPaused = true
+        view.delegate = nil
     }
 }
