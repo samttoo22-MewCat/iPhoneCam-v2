@@ -9,6 +9,8 @@
 > 動手前先讀 `SPEC-v3.md`，再用下方機制對照表選路。
 
 > 2026-10-26：`ios/` 已有原生 SwiftUI／Metal 的預覽與基礎美顏原型；README 的 `docs/media/iphone-ui-simulator.gif` 僅展示 iPhone Simulator 介面，不能作為相機、串流或虛擬攝影機驗收。iOS 實作細節與驗證邊界讀 `ios/README.md`。
+>
+> 2026-10-27：`ios/` 與 `receiver-macos/` 新增 iPhone 美顏後 H.264 經 PLNS／USB/usbmuxd 至原生 Mac 預覽的路徑。已取得 4000+ 影格、100 MB+ 與內容雜湊變動的 console 證據；人眼預覽、OBS 與系統虛擬攝影機仍未驗收。公開來源不含 InsightFace ONNX 權重，限制見 `ios/PhoneLens/FaceEngine/Models/README.md`。
 
 ## v2 現況（2026-10-11）
 

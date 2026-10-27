@@ -9,6 +9,10 @@
 _captures/
 *.h264
 *.log
+ios/Pods/
+ios/PhoneLens/FaceEngine/Models/*.onnx
+mac-camera/.build/
+mac-camera/DerivedData/
 # IDE
 .vs/
 .idea/

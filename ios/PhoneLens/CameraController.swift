@@ -23,6 +23,8 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
     @Published private(set) var measuredFPS = 0
     @Published var beauty = BeautyParams()
     @Published var comparing = false
+    /// Detection summary for the overlay; updated ~1 Hz with the other stats.
+    @Published private(set) var faceStatus = "人臉偵測載入中…"
 
     private let sessionQueue = DispatchQueue(label: "tw.phonecamera.phonelens.camera")
     private let frameQueue = DispatchQueue(label: "tw.phonecamera.phonelens.frames")
@@ -31,12 +33,61 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
     private var input: AVCaptureDeviceInput?
     private var wantsPreview = true
     private var active = true
+    private var currentBufferWidth = 0
+    private var currentBufferHeight = 0
     private var frameCount = 0
     private var lastTick = CFAbsoluteTimeGetCurrent()
     private var observers: [NSObjectProtocol] = []
+    /// Detect queue -> renderer faceState sink (normalized uv values + sequence).
+    var faceSink: ((FaceAnchor?) -> Void) = { _ in }
+    var faceMeshSink: (([CGPoint], Int, Int, Int) -> Void) = { _, _, _, _ in }
+    var faceDebugSink: ((CGRect, Int, Int, Int) -> Void) = { _, _, _, _ in }
+    /// The stream renderer consumes camera frames directly, independently of
+    /// the preview view's drawable lifecycle.
+    var frameSink: ((CVPixelBuffer, Int) -> Void) = { _, _ in }
+    #if !targetEnvironment(simulator)
+    private var faceEngine: FaceEngine?
+    private var faceEngineError: String?
+    private var lastFaces: [FaceEngine.Face] = []
+    private var faceUpdateSequence = 0
+    #endif
 
     override init() {
         super.init()
+        #if !targetEnvironment(simulator)
+        do {
+            faceEngine = try FaceEngine()
+        } catch {
+            faceEngineError = error.localizedDescription
+        }
+        faceEngine?.onFaces = { [weak self] faces, sequence in
+            guard let self else { return }
+            self.lastFaces = faces
+            let bufferW = self.currentBufferWidth
+            let bufferH = self.currentBufferHeight
+            guard bufferW > 0, bufferH > 0, let face = faces.first else {
+                self.faceSink(nil)
+                return
+            }
+            let w = Float(bufferW), h = Float(bufferH)
+            let boxW = Float(face.rect.width) / w
+            let boxH = Float(face.rect.height) / h
+            guard boxW > 0.04, boxH > 0.04 else {
+                self.faceSink(nil)
+                return
+            }
+            // Use the EMA-smoothed tracker box directly. It is the common
+            // coordinate source shared by detector, tracker and preview, and
+            // avoids a second eye/mouth-derived anchor that can drift.
+            let cx = Float(face.rect.midX) / w
+            let cy = Float(face.rect.midY) / h
+            self.faceUpdateSequence += 1
+            self.faceDebugSink(face.rect, bufferW, bufferH, self.faceUpdateSequence)
+            self.faceSink(FaceAnchor(valid: 1, cx: cx, cy: cy,
+                                     rx: boxW * 0.60, ry: boxH * 0.62, sequence: sequence))
+            self.faceMeshSink(face.landmarks, bufferW, bufferH, sequence)
+        }
+        #endif
         observers.append(NotificationCenter.default.addObserver(
             forName: AVCaptureSession.wasInterruptedNotification, object: session, queue: .main) { [weak self] _ in
                 self?.isRunning = false
@@ -152,7 +203,12 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
                 deviceLocked = false
                 self.input = newInput
                 self.frames.put(nil)
+                #if !targetEnvironment(simulator)
+                self.faceEngine?.resetTracking()
+                #endif
                 let d = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                self.currentBufferWidth = Int(d.height)   // rotated portrait buffer
+                self.currentBufferHeight = Int(d.width)
                 let available = self.devices.map { CameraLens(id: $0.uniqueID, name: Self.label($0)) }
                 if self.wantsPreview && self.active { self.session.startRunning() }
                 let running = self.session.isRunning
@@ -167,7 +223,7 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
                     self.isRunning = running
                     self.permissionDenied = false
                     self.busy = false
-                    self.status = running ? "手機預覽 · 不傳送到電腦" : "預覽已暫停"
+                    self.status = running ? "手機預覽中" : "預覽已暫停"
                 }
             } catch { self.fail("相機設定失敗：\(error.localizedDescription)") }
         }
@@ -204,7 +260,7 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
         DispatchQueue.main.async {
             self.isRunning = running
             self.measuredFPS = 0
-            if self.isConfigured { self.status = running ? "手機預覽 · 不傳送到電腦" : "預覽已暫停" }
+            if self.isConfigured { self.status = running ? "手機預覽中" : "預覽已暫停" }
         }
     }
 
@@ -215,14 +271,42 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        frames.put(buffer)
+        // FaceEngine and Metal both consume this unrotated BGRA buffer. Use its
+        // real dimensions rather than the portrait UI dimensions for UV math.
+        currentBufferWidth = CVPixelBufferGetWidth(buffer)
+        currentBufferHeight = CVPixelBufferGetHeight(buffer)
+        let sequence = frames.put(buffer)
+        frameSink(buffer, sequence)
+        #if !targetEnvironment(simulator)
+        faceEngine?.submit(buffer, sequence: sequence)
+        #endif
         frameCount += 1
         let now = CFAbsoluteTimeGetCurrent()
         if now-lastTick >= 1 {
             let rate = Int((Double(frameCount)/(now-lastTick)).rounded())
             frameCount = 0
             lastTick = now
-            DispatchQueue.main.async { self.measuredFPS = rate }
+            #if !targetEnvironment(simulator)
+            let faces = lastFaces
+            let ms = faceEngine?.lastMs ?? 0
+            let status: String
+            if let faceEngineError {
+                status = "人臉引擎錯誤 · \(faceEngineError)"
+            } else if faces.isEmpty {
+                status = "人臉偵測 · 未偵測到人臉"
+            } else {
+                let face = faces[0]
+                status = String(format: "人臉鎖定 id %d · %d 張 · yaw %.1f° · %.0f ms · 眼 %.2f",
+                                face.id, faces.count, face.yaw, ms,
+                                (face.expression.leftEye + face.expression.rightEye) * 0.5)
+            }
+            #else
+            let status = "人臉偵測 · 模擬器無相機"
+            #endif
+            DispatchQueue.main.async {
+                self.measuredFPS = rate
+                self.faceStatus = status
+            }
         }
     }
 }

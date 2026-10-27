@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>PhoneLensCamera</string>
+	<key>CFBundleIdentifier</key>
+	<string>tw.phonecamera.phonelens</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Phone Lens Camera</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Phone Lens Camera 需要存取網路串流以接收 iPhone 畫面。</string>
+	<key>NSSystemExtensionUsageDescriptionKey</key>
+	<string>Phone Lens 需要安裝虛擬攝影機，以便在 FaceTime、Zoom、Discord 中選取「Phone Lens Camera」。</string>
+</dict>
+</plist>

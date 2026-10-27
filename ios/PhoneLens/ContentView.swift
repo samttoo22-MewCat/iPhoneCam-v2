@@ -20,6 +20,20 @@ struct ContentView: View {
     @State private var connection = false
     @State private var renderer: BeautyRenderer?
     @State private var renderError: String?
+    @State private var showingMaskTest = false
+    @State private var debugFaceMask: FaceMask?
+    @State private var debugTrackerRect: CGRect?
+    @State private var debugBufferSize = CGSize.zero
+    @State private var debugUpdateSequence = 0
+    @State private var frameSinkCount = 0
+    @StateObject private var streamServer = StreamServer()
+
+    fileprivate struct FaceMask: Equatable {
+        let cx: Float
+        let cy: Float
+        let rx: Float
+        let ry: Float
+    }
 
     private var effectiveBeauty: BeautyParams {
         var result = camera.beauty
@@ -53,10 +67,52 @@ struct ContentView: View {
         .sensoryFeedback(.selection, trigger: camera.comparing)
         .task {
             guard renderer == nil else { return }
-            do { renderer = try BeautyRenderer(frames: camera.frames) }
-            catch { renderError = error.localizedDescription }
+            do {
+                let newRenderer = try BeautyRenderer(frames: camera.frames)
+                camera.faceSink = { anchor in
+                    DispatchQueue.main.async {
+                        if let v = anchor {
+                            debugFaceMask = FaceMask(cx: v.cx, cy: v.cy, rx: v.rx, ry: v.ry)
+                        } else {
+                            debugFaceMask = nil
+                        }
+                    }
+                    if let v = anchor {
+                        newRenderer.faceState.update(valid: v.valid, cx: v.cx, cy: v.cy,
+                                                     rx: v.rx, ry: v.ry, sequence: v.sequence)
+                    } else {
+                        newRenderer.faceState.updateLost()
+                    }
+                }
+                camera.faceMeshSink = { points, width, height, sequence in
+                    newRenderer.faceState.updateMesh(points, width: width, height: height,
+                                                     sequence: sequence)
+                }
+                camera.faceDebugSink = { rect, width, height, sequence in
+                    DispatchQueue.main.async {
+                        debugTrackerRect = rect
+                        debugBufferSize = CGSize(width: width, height: height)
+                        debugUpdateSequence = sequence
+                    }
+                }
+                newRenderer.streamFrameSink = { buffer, _ in
+                    streamServer.deliverFrame(buffer)
+                }
+                camera.frameSink = { buffer, sequence in
+                    guard streamServer.isStreaming else { return }
+                    frameSinkCount += 1
+                    newRenderer.renderForStream(buffer, sequence: sequence)
+                }
+                renderer = newRenderer
+                if ProcessInfo.processInfo.arguments.contains("--autostream") {
+                    streamServer.start()
+                }
+            } catch { renderError = error.localizedDescription }
         }
         .onChange(of: scenePhase) { _, phase in camera.setActive(phase == .active) }
+        .onChange(of: streamServer.isStreaming) { _, streaming in
+            UIApplication.shared.isIdleTimerDisabled = streaming
+        }
         .sheet(isPresented: $beauty, onDismiss: { camera.comparing = false }) {
             ScrollView {
                 VStack(spacing: 16) {
@@ -66,7 +122,7 @@ struct ContentView: View {
                         Button("完成") { beauty = false }.modifier(NativeGlassButton())
                     }
                     beautyControls
-                    Text("即時處理手機影像；不會傳送到電腦。")
+                    Text("預覽在手機端即時處理；開始 USB 串流後才會傳送美顏畫面。")
                         .font(.footnote).foregroundStyle(Palette.muted)
                 }.padding(20)
             }
@@ -75,22 +131,67 @@ struct ContentView: View {
             .tint(Palette.cyan)
         }
         .sheet(isPresented: $connection) {
-            VStack(alignment: .leading, spacing: 20) {
-                HStack {
-                    Text("連接電腦").font(.title2.bold())
-                    Spacer()
-                    Button("完成") { connection = false }.modifier(NativeGlassButton())
-                }
-                Label("視訊鏡頭輸出尚未接入", systemImage: "desktopcomputer")
-                    .foregroundStyle(Palette.cyan)
-                Text("這一版提供手機端預覽、美顏與相機控制，不會啟動直播或傳送影像。")
-                Text("USB、CAM1/CUM1、編碼碼率及 Windows 接收端屬於下一階段。")
-                    .foregroundStyle(Palette.muted)
-                Spacer()
-            }.padding(24)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
+            connectSheet
         }
+    }
+
+    private var connectSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("連接電腦").font(.title2.bold())
+                Spacer()
+                Button("完成") { connection = false }.modifier(NativeGlassButton())
+            }
+            HStack(spacing: 10) {
+                Image(systemName: streamServer.clientConnected ? "checkmark.circle.fill" : "desktopcomputer")
+                    .foregroundStyle(streamServer.clientConnected ? Color.green : Palette.cyan)
+                Text(streamServer.stateText)
+                    .font(.subheadline.weight(.medium))
+            }
+            if streamServer.clientConnected {
+                Text("串流 \(streamServer.sentFPS) fps · \(streamServer.sentKbps) kbps")
+                    .font(.caption.monospacedDigit()).foregroundStyle(Palette.muted)
+                Text("GPU \(streamServer.renderedFPS) fps · H.264 \(streamServer.encoderPackets) 封包")
+                    .font(.caption2.monospacedDigit()).foregroundStyle(Palette.muted)
+            }
+            if let error = streamServer.lastError {
+                Text(error).font(.footnote).foregroundStyle(Palette.pink)
+            }
+            if camera.status.contains("模擬器") {
+                Text("模擬器沒有相機，無法串流影像。").font(.footnote).foregroundStyle(Palette.muted)
+            }
+            Button {
+                if streamServer.clientConnected || streamServer.stateText.contains("監聽") {
+                    streamServer.stop()
+                } else {
+                    streamServer.start()
+                }
+            } label: {
+                Label(streamServer.stateText.contains("監聽") || streamServer.clientConnected
+                        ? "停止串流" : "開始串流到電腦",
+                      systemImage: streamServer.stateText.contains("監聽") || streamServer.clientConnected
+                        ? "stop.circle" : "play.circle")
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .modifier(NativeGlassButton(prominent: true))
+            .disabled(camera.status.contains("模擬器"))
+            VStack(alignment: .leading, spacing: 8) {
+                Text("電腦端設定").font(.subheadline.weight(.semibold))
+                Text("1. 用 USB 線連接 iPhone 與電腦。")
+                Text("2. macOS：啟動 PhoneLensReceiver（自動透過 usbmux 轉送）。")
+                Text("3. Windows：先執行 iproxy 8765 8765，再按 USB 監聽。")
+                Text("影像以美顏處理後的 H.264 經 PLNS 傳至 Mac Receiver 預覽；系統虛擬攝影機仍待啟用。")
+                    .font(.footnote).foregroundStyle(Palette.muted)
+            }
+            .font(.footnote)
+            .foregroundStyle(Palette.muted)
+            Spacer()
+        }
+        .padding(24)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .tint(Palette.cyan)
+        .onDisappear { streamServer.stop() }
     }
 
     private var header: some View {
@@ -103,11 +204,14 @@ struct ContentView: View {
             }
             Spacer(minLength: 4)
             Button { connection = true } label: {
-                Label("僅預覽", systemImage: "iphone").font(.caption.weight(.medium))
+                Label(streamServer.clientConnected ? "串流中" : "連接電腦",
+                      systemImage: streamServer.clientConnected ? "desktopcomputer" : "desktopcomputer.and.arrow.down")
+                    .font(.caption.weight(.medium))
                     .frame(minHeight: 32)
             }
             .modifier(NativeGlassButton())
-            .accessibilityLabel("連線與輸出設定，目前僅手機預覽")
+            .accessibilityLabel(streamServer.clientConnected
+                    ? "連線與輸出設定，正在串流到電腦" : "連接電腦")
         }.padding(.horizontal, 18).padding(.vertical, 10)
             .accessibilityIdentifier("appHeader")
     }
@@ -128,6 +232,11 @@ struct ContentView: View {
                     }.modifier(NativeGlassButton())
                     Button { camera.comparing.toggle() } label: {
                         Label(camera.comparing ? "返回美顏" : "對比原圖", systemImage: "circle.lefthalf.filled")
+                            .frame(maxWidth: .infinity, minHeight: 32)
+                    }.modifier(NativeGlassButton())
+                    Button { showingMaskTest.toggle() } label: {
+                        Label(showingMaskTest ? "隱藏位置" : "位置測試",
+                              systemImage: showingMaskTest ? "viewfinder" : "viewfinder.circle")
                             .frame(maxWidth: .infinity, minHeight: 32)
                     }.modifier(NativeGlassButton())
                 }
@@ -177,6 +286,9 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("\(camera.dimensions) · 取樣 \(camera.measuredFPS) FPS")
                         .monospacedDigit()
+                    if camera.isRunning {
+                        Text(camera.faceStatus).foregroundStyle(Palette.pink)
+                    }
                     Text(camera.status).lineLimit(2)
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -188,6 +300,11 @@ struct ContentView: View {
                     .allowsHitTesting(false)
             }
             .allowsHitTesting(false)
+            if showingMaskTest {
+                FaceMaskOverlay(mask: debugFaceMask, trackerRect: debugTrackerRect,
+                                bufferSize: debugBufferSize, sequence: debugUpdateSequence)
+                    .allowsHitTesting(false)
+            }
         }
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Palette.cyan.opacity(0.8), lineWidth: 1))
@@ -244,7 +361,27 @@ struct ContentView: View {
             beautySlider("清晰", value: $camera.beauty.sharpen)
             beautySlider("紅潤", value: $camera.beauty.pink)
             beautySlider("補光", value: $camera.beauty.fill)
-            Text("中央橢圓區域加權，未啟用人臉追蹤。清晰度也會影響背景。")
+            Toggle("顯示美顏位置測試", isOn: $showingMaskTest)
+                .font(.subheadline)
+                .padding(.vertical, 4)
+            Divider().padding(.vertical, 4)
+            Text("臉部微調").font(.subheadline.bold())
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack {
+                    ForEach(Array(BeautyParams.reshapePresets.enumerated()), id: \.offset) { _, preset in
+                        Button(preset.name) { camera.beauty.reshape = preset.values }
+                            .modifier(NativeGlassButton())
+                            .disabled(!camera.beauty.enabled)
+                    }
+                    Button("清除") { camera.beauty.reshape = [Float](repeating: 0, count: 20) }
+                        .modifier(NativeGlassButton())
+                        .disabled(!camera.beauty.enabled)
+                }.padding(.vertical, 2)
+            }
+            ForEach(BeautyParams.reshapeControls, id: \.slot) { control in
+                beautySlider(control.name, value: reshapeBinding(control.slot))
+            }
+            Text("開源人臉引擎（SCRFD 偵測＋106 點＋IoU 追蹤）跟隨鎖定人臉；沒有可信人臉時不套用臉部美顏。清晰度也會影響背景。")
                 .font(.caption).foregroundStyle(Palette.muted)
                 .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
             HStack {
@@ -267,6 +404,14 @@ struct ContentView: View {
         }.frame(minHeight: 44)
     }
 
+    private func reshapeBinding(_ slot: Int) -> Binding<Float> {
+        Binding(get: { camera.beauty.reshape.indices.contains(slot) ? camera.beauty.reshape[slot] : 0 },
+                set: { value in
+                    guard camera.beauty.reshape.indices.contains(slot) else { return }
+                    camera.beauty.reshape[slot] = value
+                })
+    }
+
     private var help: some View {
         ScrollView {
             VStack(spacing: 14) {
@@ -275,7 +420,7 @@ struct ContentView: View {
                         .font(.callout).lineSpacing(8)
                 }
                 card("本版範圍") {
-                    Text("保留 iOS 原生 Liquid Glass、系統面板與觸覺回饋。美顏在手機 GPU 處理，不上傳影像。")
+                    Text("保留 iOS 原生 Liquid Glass、系統面板與觸覺回饋。人臉偵測與美顏都在手機上處理，不上傳影像。")
                     Text("尚無 USB／Wi-Fi 串流、錄影或桌面虛擬攝影機輸出。")
                         .foregroundStyle(Palette.muted)
                 }
@@ -312,6 +457,67 @@ struct ContentView: View {
         }.tint(page == index ? Palette.pink : Palette.muted)
             .modifier(NativeGlassButton(prominent: page == index))
             .accessibilityAddTraits(page == index ? .isSelected : [])
+    }
+}
+
+/// Visualizes the exact normalized ellipse that the Metal shader receives.
+/// It is intentionally an overlay only and never changes the camera texture.
+private struct FaceMaskOverlay: View {
+    let mask: ContentView.FaceMask?
+    let trackerRect: CGRect?
+    let bufferSize: CGSize
+    let sequence: Int
+
+    var body: some View {
+        GeometryReader { geometry in
+            if let mask {
+                if let trackerRect, bufferSize.width > 0, bufferSize.height > 0 {
+                    RoundedRectangle(cornerRadius: 3)
+                        .stroke(Palette.pink, style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
+                        .frame(width: trackerRect.width / bufferSize.width * geometry.size.width,
+                               height: trackerRect.height / bufferSize.height * geometry.size.height)
+                        .position(x: trackerRect.midX / bufferSize.width * geometry.size.width,
+                                  y: trackerRect.midY / bufferSize.height * geometry.size.height)
+                }
+                Ellipse()
+                    .stroke(Palette.cyan, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+                    .background(Ellipse().fill(Palette.cyan.opacity(0.10)))
+                    .frame(width: CGFloat(mask.rx) * geometry.size.width * 2,
+                           height: CGFloat(mask.ry) * geometry.size.height * 2)
+                    .position(x: CGFloat(mask.cx) * geometry.size.width,
+                              y: CGFloat(mask.cy) * geometry.size.height)
+                    .overlay(alignment: .topLeading) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("青：美顏範圍 / 粉：tracker 框")
+                            Text(String(format: "#%d  uv %.3f, %.3f  r %.3f, %.3f",
+                                        sequence, mask.cx, mask.cy, mask.rx, mask.ry))
+                            if let trackerRect {
+                                Text(String(format: "px %.0f,%.0f %.0fx%.0f / %.0fx%.0f",
+                                            trackerRect.origin.x, trackerRect.origin.y,
+                                            trackerRect.width, trackerRect.height,
+                                            bufferSize.width, bufferSize.height))
+                            }
+                        }
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 6).padding(.vertical, 4)
+                            .background(Palette.cyan.opacity(0.85), in: Capsule())
+                            .foregroundStyle(Palette.bg)
+                            .offset(x: 8, y: 8)
+                    }
+            } else {
+                VStack(spacing: 6) {
+                    Image(systemName: "face.dashed")
+                    Text("尚未鎖定人臉\n目前不套用臉部美顏")
+                        .multilineTextAlignment(.center)
+                }
+                .font(.caption.bold())
+                .foregroundStyle(Palette.pink)
+                .padding(12)
+                .background(.black.opacity(0.66), in: RoundedRectangle(cornerRadius: 10))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .accessibilityIdentifier("faceMaskTestOverlay")
     }
 }
 

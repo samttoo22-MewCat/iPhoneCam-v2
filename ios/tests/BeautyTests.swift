@@ -5,11 +5,12 @@ import MetalKit
 struct BeautyTests {
     static func main() throws {
         var params = BeautyParams()
-        assert(params.uniforms == [0.35, 0.20, 0, 0, 0.12])
+        // uniforms: 5 controls + face mask (valid, cx, cy, rx, ry); no face is a pass-through.
+        assert(params.uniforms == [0.35, 0.20, 0, 0, 0.12, 0, 0.5, 0.46, 0.40, 0.50])
         params.smooth = -1; params.white = 2; params.sharpen = .nan
         assert(params.uniforms.prefix(3).elementsEqual([0, 1, 0]))
         params.enabled = false
-        assert(params.uniforms == [0, 0, 0, 0, 0])
+        assert(params.uniforms == Array(repeating: 0, count: 10))
         print("PASS: defaults, bounds, non-finite input, bypass")
 
         let renderer = try BeautyRenderer(frames: CameraFrames())
@@ -41,9 +42,13 @@ struct BeautyTests {
                             from: MTLRegionMake2D(0, 0, size, size), mipmapLevel: 0)
             return result
         }
-        let zero = BeautyParams(enabled: true, smooth: 0, white: 0, sharpen: 0, pink: 0, fill: 0)
+        var zero = BeautyParams(enabled: true, smooth: 0, white: 0, sharpen: 0, pink: 0, fill: 0)
+        zero.faceValid = 1
         let original = render(zero)
         assert(zip(original, pixels).allSatisfy { abs(Int($0)-Int($1)) <= 1 }, "UV or channel order changed")
+        // A face effect must never be applied to a guessed center ellipse.
+        // With no trusted track, default nonzero controls are a full pass-through.
+        assert(render(BeautyParams()) == original, "untracked frame changed pixels")
         var disabled = BeautyParams(); disabled.enabled = false
         assert(render(disabled) == original)
         for (name, key) in [("smooth", \BeautyParams.smooth), ("white", \BeautyParams.white),

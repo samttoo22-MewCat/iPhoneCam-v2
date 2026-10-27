@@ -1,6 +1,6 @@
 # 泡泡直播助手 v2（iPhoneCam v2）
 
-> v2 由 v1 從頭改寫：Android 端改用 Kotlin、PC 端 .NET 10 + WPF（霓虹 UI）、Media Foundation 虛擬攝影機；另有進行中的原生 iOS 預覽／美顏端。
+> v2 由 v1 從頭改寫：Android 端改用 Kotlin、PC 端 .NET 10 + WPF（霓虹 UI）、Media Foundation 虛擬攝影機；iPhone 端則提供原生預覽、美顏與 USB 串流。
 > 手機鏡頭 → Wi-Fi → PC 虛擬攝影機 → OBS／Discord／Teams 直接選用。
 > v1（`iPhoneCam-v1`）已封存凍結，本倉庫為現行開發線。
 
@@ -9,6 +9,17 @@
 ![iPhone 介面錄影：美顏面板、相機設定與輸出狀態](docs/media/iphone-ui-simulator.gif)
 
 此錄影來自 **iPhone 14 Simulator**，展示首頁、美顏面板、設定與輸出狀態；Simulator 沒有相機，因此不是實拍美顏品質或串流成功證明。若動圖無法播放，可下載 [MP4 錄影](docs/media/iphone-ui-simulator.mp4)。
+
+## 2026-10-27 USB 預覽進度
+
+| 路徑 | 目前狀態 | 驗證邊界 |
+|---|---|---|
+| iPhone → Mac Receiver | USB/usbmuxd、H.264、PLNS v1 與 VideoToolbox 解碼已連續處理 4000+ 影格／100 MB+；逐段內容雜湊變動 | 仍待使用者人眼確認預覽是否跟手 |
+| macOS 虛擬攝影機 | Camera Extension 原始碼與 Host 已存在 | 缺 Developer ID 啟用條件；未成為可選取系統鏡頭 |
+| OBS／Discord | 可先用 OBS 視窗擷取 Receiver，再由 OBS Virtual Camera 輸出 | 尚未完成 OBS／通話端到端驗收 |
+| Windows iPhone USB | 尚未驗證 | 現有 Android/Windows 路徑不等於 iPhone USB 路徑 |
+
+這次的可用成果是「手機經 USB 到 Mac 的原生預覽」，不是已完成的跨平台虛擬攝影機產品。
 
 ## 系統架構
 
@@ -25,9 +36,13 @@ PC（C#，Win11，.NET 10）
               ↓
   OBS／Discord／Teams 選「iPhoneCam」當攝影機
 
-iPhone App（SwiftUI／AVFoundation／Metal，進行中）
-  相機最新 BGRA 幀 → Metal 基礎美顏 → 本機預覽
-  ※ 尚未串接 CAM1/CUM1、VideoToolbox 編碼或桌面虛擬攝影機
+iPhone App（SwiftUI／AVFoundation／Metal）
+  AVCapture → BeautyRenderer 離屏 Metal → VideoToolbox H.264（Annex-B）
+  → PLNS v1、127.0.0.1:8765 → USB/usbmuxd
+              ↓
+macOS PhoneLensReceiver（原生 usbmuxd）
+  PLNS parser → VideoToolbox 解碼 → BGRA 重包 → 預覽視窗
+  ※ 系統虛擬攝影機 Extension 尚未啟用
 ```
 
 一句話分工：**手機是攝影機＋編碼器，PC 是收流端＋大腦**。編碼只在手機做，其餘（解碼、多檔輸出、控制、方向轉正）全在 PC。
@@ -57,8 +72,10 @@ iPhoneCam/
 │       ├── SenderViewModel.kt  #   狀態：廣播開關、檔位、鏡頭、過熱
 │       └── core/               #   Cam1／NetServer／StreamEngine／DeviceCameraCatalog
 ├── ios/                        # iPhone 原生預覽／美顏原型（SwiftUI＋Metal）
-│   ├── PhoneLens/              #   相機、Metal renderer 與 iOS 介面
+│   ├── PhoneLens/              #   相機、Metal、H.264 與 PLNS server
 │   └── tests/                  #   Metal shader 離屏像素測試
+├── receiver-macos/             # 原生 usbmuxd + H.264 解碼 + 預覽視窗
+├── mac-camera/                 # 未啟用的 macOS Camera Extension／Host
 ├── docs/media/                 # README 的 iPhone Simulator 介面錄影
 └── SPEC-v3.md                  # 規格定稿（v3 凍結），含檔位、碼率、濾鏡分工
 ```
@@ -91,6 +108,7 @@ FPS 可選 30／60。手機過熱自動降碼率；網路變差走 ABR 碼率階
 - **多鏡頭**：Kotlin 端列舉各鏡頭（含 Samsung 機型對照表），串流中可切換主鏡／超廣角／長焦／前置。
 - **保命機制**：session 失敗自動降檔、drain 防重入、過熱降碼率、亮屏＋WiFi 鎖。
 - **霓虹 UI**：深紫黑底＋青粉漸層框＋LIVE 藥丸，致敬《主播女孩重度依賴》風格。
+- **iPhone USB 預覽（macOS）**：同一張美顏後的 offscreen IOSurface buffer 同時餵預覽與 H.264 編碼；PLNS v1 透過手機 loopback listener 與 usbmuxd 傳至零相依的 PhoneLensReceiver。重連重播 CONFIG 並強制 keyframe，非 keyframe 受 12 幀有界佇列限制。
 - **iPhone 預覽／基礎美顏（進行中）**：SwiftUI 版首頁、設定與幫助；AVFoundation 相機幀經 Metal 處理磨皮、美白、清晰、紅潤、補光。保留 Liquid Glass、原圖對比與重設。詳見 [`ios/README.md`](ios/README.md)。
 
 ## 建置
@@ -105,17 +123,28 @@ dotnet build iPhoneCam.slnx -c Release
 gradle assembleDebug   # 在 AndroidSender/ 下，產出 app-debug.apk
 ```
 
-**iPhone 端**（需 Xcode 26+；目前為本機預覽／美顏）：
+**iPhone 端**（需 Xcode 27、CocoaPods；可建置手機端預覽／美顏／USB 送流）：
 ```sh
-xcodebuild -project ios/PhoneLens.xcodeproj -scheme PhoneLens \
+cd ios
+pod install
+xcodebuild -workspace PhoneLens.xcworkspace -scheme PhoneLens \
   -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
   -derivedDataPath /tmp/phonelens-build build CODE_SIGNING_ALLOWED=NO
 
-xcrun swiftc ios/PhoneLens/BeautyParams.swift ios/PhoneLens/BeautyRenderer.swift ios/tests/BeautyTests.swift -o /tmp/phonelens-beauty-tests
+xcrun swiftc PhoneLens/BeautyParams.swift PhoneLens/BeautyRenderer.swift tests/BeautyTests.swift -o /tmp/phonelens-beauty-tests
 /tmp/phonelens-beauty-tests
 ```
 
-**註冊虛擬攝影機**（系統管理員一次）：
+**macOS Receiver**（原生 usbmuxd，不需 iproxy／Homebrew）：
+```sh
+cd receiver-macos
+xcrun swiftc -O PhoneLensReceiver.swift -o build/PhoneLensReceiver \
+  -framework AVFoundation -framework AppKit -framework CoreMedia -framework CoreVideo \
+  -framework Foundation -framework VideoToolbox
+./build/PhoneLensReceiver
+```
+
+**註冊 Windows 虛擬攝影機**（系統管理員一次）：
 ```powershell
 iPhoneCam.Source\register.bat
 ```
@@ -123,13 +152,14 @@ iPhoneCam.Source\register.bat
 ## 現況與限制
 
 - PC 端 **Win11 專用**（MF 虛擬攝影機需 build 22621 以上）。
-- iPhone 端已提供本機相機預覽、Metal 基礎美顏及鏡頭／解析度／FPS 控制；真機相機控制、實拍畫質、前置鏡像與長時間效能仍待驗收。
-- iPhone 端尚未接入 VideoToolbox 編碼、USB／Wi-Fi 傳輸、CAM1/CUM1、桌面接收器或虛擬攝影機；因此目前**不能**作為 OBS／Discord／Teams 的視訊鏡頭。
-- iPhone 美顏使用固定中央橢圓加權，不是人臉偵測／追蹤；清晰度也會影響背景。美顏參數目前只保留本次 App 執行。
+- iPhone USB 串流已可進入 macOS Receiver，並有 console 的連續影格／傳輸量／內容變動證據；人眼即時性、拔插自癒與 OBS 視窗擷取仍待驗收。
+- macOS Camera Extension 仍受 Developer ID／系統 Extension 啟用限制；目前**不能**直接作為 OBS／Discord／Teams 可選取的系統視訊鏡頭。
+- iPhone 美顏會依偵測與追蹤到的人臉套用遮罩，沒有可信人臉時直通原圖；真機追蹤品質與長時間發熱仍待驗收。
 - Android 與 Windows 的既有串流路徑未因 iPhone UI 原型而重新驗證；請分開看待各平台的驗收狀態。
 - 規格與檔位設計見 `SPEC-v3.md`；專案記憶與設計藍圖見 `AGENTS.md`。
 
 ## 授權與來源
 
 - 虛擬攝影機實作 fork 自 [`smourier/VCamNetSample`](https://github.com/smourier/VCamNetSample)（MIT）。
+- FaceEngine 的整合程式在本專案內；本機使用的 InsightFace 預訓練權重具有非商業研究限制，雜湊與發布邊界見 [`ios/PhoneLens/FaceEngine/Models/README.md`](ios/PhoneLens/FaceEngine/Models/README.md)。公開 repository 不追蹤 ONNX 權重。
 - 本專案其餘部分為個人專案程式碼。

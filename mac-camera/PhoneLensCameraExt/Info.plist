@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>tw.phonecamera.phonelens.frame</string>
+	<key>CFBundleName</key>
+	<string>PhoneLensCameraExt</string>
+	<key>CFBundlePackageType</key>
+	<string>SYSX</string>
+	<key>CMIOExtensionMachServiceName</key>
+	<string>tw.phonecamera.phonelens.frame</string>
+	<key>NSSystemExtensionUsageDescriptionKey</key>
+	<string>Phone Lens 需要安裝虛擬攝影機，以便在 FaceTime、Zoom、Discord 中選取「Phone Lens Camera」。</string>
+</dict>
+</plist>
