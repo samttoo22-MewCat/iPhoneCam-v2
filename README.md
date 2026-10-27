@@ -135,6 +135,8 @@ xcrun swiftc PhoneLens/BeautyParams.swift PhoneLens/BeautyRenderer.swift tests/B
 /tmp/phonelens-beauty-tests
 ```
 
+公開 checkout 不含 ONNX 權重，因此仍可編譯與執行預覽／串流，但人臉追蹤式美顏不會啟用。僅在自行取得符合用途的權利後，依 [`Models/README.md`](ios/PhoneLens/FaceEngine/Models/README.md) 將模型加入 App target。
+
 **macOS Receiver**（原生 usbmuxd，不需 iproxy／Homebrew）：
 ```sh
 cd receiver-macos
